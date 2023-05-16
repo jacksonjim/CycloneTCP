@@ -114,6 +114,7 @@ const NicDriver gd32f4xxEthDriver =
 error_t gd32f4xxEthInit(NetInterface *interface)
 {
    error_t error;
+   ErrStatus reval_state = ERROR;
 
    //Debug message
    TRACE_INFO("Initializing GD32F4XX Ethernet MAC...\r\n");
@@ -129,16 +130,28 @@ error_t gd32f4xxEthInit(NetInterface *interface)
    rcu_periph_clock_enable(RCU_ENETTX);
    rcu_periph_clock_enable(RCU_ENETRX);
 
+#ifndef USE_GD_FW
    //Reset Ethernet MAC peripheral
    rcu_periph_reset_enable(RCU_ENETRST);
    rcu_periph_reset_disable(RCU_ENETRST);
+#else
+   /* reset ethernet on AHB bus */
+   enet_deinit();
+#endif
 
+#ifndef USE_GD_FW
    //Perform a software reset
    ENET_DMA_BCTL |= ENET_DMA_BCTL_SWR;
    //Wait for the reset to complete
    while((ENET_DMA_BCTL & ENET_DMA_BCTL_SWR) != 0)
    {
    }
+#else
+   reval_state = enet_software_reset();
+   while (ERROR == reval_state)
+   {
+   }
+#endif
 
    //Adjust MDC clock range depending on HCLK frequency
    ENET_MAC_PHY_CTL = ENET_MDC_HCLK_DIV62;
@@ -226,6 +239,16 @@ error_t gd32f4xxEthInit(NetInterface *interface)
    //Enable DMA transmission and reception
    ENET_DMA_CTL |= ENET_DMA_CTL_STE | ENET_DMA_CTL_SRE;
 
+    /* configure the parameters which are usually less cared for enet initialization */
+    //  enet_initpara_config(HALFDUPLEX_OPTION, ENET_CARRIERSENSE_ENABLE|ENET_RECEIVEOWN_ENABLE|ENET_RETRYTRANSMISSION_DISABLE|ENET_BACKOFFLIMIT_10|ENET_DEFERRALCHECK_DISABLE);
+    //  enet_initpara_config(DMA_OPTION, ENET_FLUSH_RXFRAME_ENABLE|ENET_SECONDFRAME_OPT_ENABLE|ENET_NORMAL_DESCRIPTOR);
+
+#ifdef CHECKSUM_BY_HARDWARE
+   enet_init(ENET_AUTO_NEGOTIATION, ENET_AUTOCHECKSUM_DROP_FAILFRAMES, ENET_BROADCAST_FRAMES_PASS);
+#else
+   enet_init(ENET_AUTO_NEGOTIATION, ENET_NO_AUTOCHECKSUM, ENET_BROADCAST_FRAMES_PASS);
+#endif /* CHECKSUM_BY_HARDWARE */
+
    //Accept any packets from the upper layer
    osSetEvent(&interface->nicTxEvent);
 
@@ -242,7 +265,7 @@ error_t gd32f4xxEthInit(NetInterface *interface)
 __weak_func void gd32f4xxEthInitGpio(NetInterface *interface)
 {
 //GD32F470I-EVAL or GD32F470Z-EVAL evaluation board?
-#if defined(USE_GD32F470I_EVAL) || defined(USE_GD32F470Z_EVAL)
+#if defined(USE_GD32F470I_EVAL) || defined(USE_GD32F470Z_EVAL)|| defined(USE_GD32F407V)
    //Enable SYSCFG clock
    rcu_periph_clock_enable(RCU_SYSCFG);
 
@@ -256,11 +279,123 @@ __weak_func void gd32f4xxEthInitGpio(NetInterface *interface)
    gpio_output_options_set(GPIOA, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, GPIO_PIN_8);
    gpio_af_set(GPIOA, GPIO_AF_0, GPIO_PIN_8);
 
+// Configure CKOUT0 pin to output the PLL2 clock (50MHz)
+#ifdef MMI_MODE
+
+#ifdef PHY_CLOCK_MCO
+   /* output HXTAL clock (25MHz) on CKOUT0 pin(PA8) to clock the PHY */
+   rcu_ckout0_config(RCU_CKOUT0SRC_HXTAL, RCU_CKOUT0_DIV1);
+#endif /* PHY_CLOCK_MCO */
+   syscfg_enet_phy_interface_config(SYSCFG_ENET_PHY_MII);
+
+#elif defined RMII_MODE
    //Configure CKOUT0 pin to output the 50MHz reference clock
    rcu_ckout0_config(RCU_CKOUT0SRC_PLLP, RCU_CKOUT0_DIV4);
 
    //Select RMII interface mode
    syscfg_enet_phy_interface_config(SYSCFG_ENET_PHY_RMII);
+
+#endif /* MII_MODE */
+
+#ifdef MII_MODE
+
+   /* PA1: ETH_MII_RX_CLK */
+   gpio_mode_set(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_1);
+   gpio_output_options_set(GPIOA, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, GPIO_PIN_1);
+
+   /* PA2: ETH_MDIO */
+   gpio_mode_set(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_2);
+   gpio_output_options_set(GPIOA, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, GPIO_PIN_2);
+
+   /* PA7: ETH_MII_RX_DV */
+   gpio_mode_set(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_7);
+   gpio_output_options_set(GPIOA, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, GPIO_PIN_7);
+
+   gpio_af_set(GPIOA, GPIO_AF_11, GPIO_PIN_1);
+   gpio_af_set(GPIOA, GPIO_AF_11, GPIO_PIN_2);
+   gpio_af_set(GPIOA, GPIO_AF_11, GPIO_PIN_7);
+
+   /* PG11: ETH_MII_TX_EN */
+   gpio_mode_set(GPIOG, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_11);
+   gpio_output_options_set(GPIOG, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, GPIO_PIN_11);
+
+   /* PG13: ETH_MII_TXD0 */
+   gpio_mode_set(GPIOG, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_13);
+   gpio_output_options_set(GPIOG, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, GPIO_PIN_13);
+
+   /* PG14: ETH_MII_TXD1 */
+   gpio_mode_set(GPIOG, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_14);
+   gpio_output_options_set(GPIOG, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, GPIO_PIN_14);
+
+   gpio_af_set(GPIOG, GPIO_AF_11, GPIO_PIN_11);
+   gpio_af_set(GPIOG, GPIO_AF_11, GPIO_PIN_13);
+   gpio_af_set(GPIOG, GPIO_AF_11, GPIO_PIN_14);
+
+   /* PC1: ETH_MDC */
+   gpio_mode_set(GPIOC, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_1);
+   gpio_output_options_set(GPIOC, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, GPIO_PIN_1);
+
+   /* PC2: ETH_MII_TXD2 */
+   gpio_mode_set(GPIOC, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_2);
+   gpio_output_options_set(GPIOC, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, GPIO_PIN_2);
+
+   /* PC3: ETH_MII_TX_CLK */
+   gpio_mode_set(GPIOC, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_3);
+   gpio_output_options_set(GPIOC, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, GPIO_PIN_3);
+
+   /* PC4: ETH_MII_RXD0 */
+   gpio_mode_set(GPIOC, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_4);
+   gpio_output_options_set(GPIOC, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, GPIO_PIN_4);
+
+   /* PC5: ETH_MII_RXD1 */
+   gpio_mode_set(GPIOC, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_5);
+   gpio_output_options_set(GPIOC, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, GPIO_PIN_5);
+
+   gpio_af_set(GPIOC, GPIO_AF_11, GPIO_PIN_1);
+   gpio_af_set(GPIOC, GPIO_AF_11, GPIO_PIN_2);
+   gpio_af_set(GPIOC, GPIO_AF_11, GPIO_PIN_3);
+   gpio_af_set(GPIOC, GPIO_AF_11, GPIO_PIN_4);
+   gpio_af_set(GPIOC, GPIO_AF_11, GPIO_PIN_5);
+
+   /* PH2: ETH_MII_CRS */
+   gpio_mode_set(GPIOH, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_2);
+   gpio_output_options_set(GPIOH, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, GPIO_PIN_2);
+
+   /* PH3: ETH_MII_COL */
+   gpio_mode_set(GPIOH, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_3);
+   gpio_output_options_set(GPIOH, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, GPIO_PIN_3);
+
+   /* PH6: ETH_MII_RXD2 */
+   gpio_mode_set(GPIOH, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_6);
+   gpio_output_options_set(GPIOH, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, GPIO_PIN_6);
+
+   /* PH7: ETH_MII_RXD3 */
+   gpio_mode_set(GPIOH, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_7);
+   gpio_output_options_set(GPIOH, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, GPIO_PIN_7);
+
+   gpio_af_set(GPIOH, GPIO_AF_11, GPIO_PIN_2);
+   gpio_af_set(GPIOH, GPIO_AF_11, GPIO_PIN_3);
+   gpio_af_set(GPIOH, GPIO_AF_11, GPIO_PIN_6);
+   gpio_af_set(GPIOH, GPIO_AF_11, GPIO_PIN_7);
+
+   /* PI8: ETH_INT */
+   gpio_mode_set(GPIOI, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_8);
+   gpio_output_options_set(GPIOI, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, GPIO_PIN_8);
+
+   /* PI10: ETH_MII_RX_ER */
+   gpio_mode_set(GPIOI, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_10);
+   gpio_output_options_set(GPIOI, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, GPIO_PIN_10);
+
+   gpio_af_set(GPIOI, GPIO_AF_11, GPIO_PIN_8);
+   gpio_af_set(GPIOI, GPIO_AF_11, GPIO_PIN_10);
+
+   /* PB8: ETH_MII_TXD3 */
+   gpio_mode_set(GPIOB, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_8);
+   gpio_output_options_set(GPIOB, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, GPIO_PIN_8);
+
+   gpio_af_set(GPIOB, GPIO_AF_11, GPIO_PIN_8);
+#elif defined RMII_MODE
+   // Select RMII interface mode
 
    //Configure ETH_RMII_REF_CLK (PA1)
    gpio_mode_set(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_1);
@@ -306,6 +441,8 @@ __weak_func void gd32f4xxEthInitGpio(NetInterface *interface)
    gpio_mode_set(GPIOC, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_5);
    gpio_output_options_set(GPIOC, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, GPIO_PIN_5);
    gpio_af_set(GPIOC, GPIO_AF_11, GPIO_PIN_5);
+
+#endif /* MII_MODE */
 #endif
 }
 

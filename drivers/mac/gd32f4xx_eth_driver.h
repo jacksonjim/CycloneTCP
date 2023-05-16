@@ -34,6 +34,9 @@
 //Dependencies
 #include "core/nic.h"
 
+#define RMII_MODE
+#define CHECKSUM_BY_HARDWARE
+
 //Number of TX buffers
 #ifndef GD32F4XX_ETH_TX_BUFFER_COUNT
    #define GD32F4XX_ETH_TX_BUFFER_COUNT 3
